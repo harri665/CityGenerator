@@ -13,6 +13,7 @@ find_package(Houdini REQUIRED)
 set(SOURCES
     src/core/RoadGraph.cpp
     src/core/CityBlock.cpp
+    src/core/TensorField.cpp
     src/strategies/GrowthStrategies.cpp
     src/factory/Factories.cpp
     src/commands/Commands.cpp

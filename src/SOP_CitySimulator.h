@@ -34,6 +34,15 @@ private:
     void        ensureSimulator(OP_Context& context);
     std::string growthMode() const;
 
+    // Button callback — Houdini calls this when any PRM_CALLBACK button is clicked
+    static int  buttonCallback(void* data, int index, float time,
+                               const PRM_Template* tplate);
+
+    // Which action the last button click requested
+    enum PendingAction { ACTION_NONE, ACTION_STEP, ACTION_RUN,
+                         ACTION_RESET, ACTION_SAVE, ACTION_LOAD };
+    PendingAction myPendingAction = ACTION_NONE;
+
     // Simulator owns the algorithm and persistence;
     // SOP owns the observers (they need SOP-lifetime pointers to gdp and this)
     std::unique_ptr<CitySimulator>      mySim;

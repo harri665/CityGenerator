@@ -59,12 +59,18 @@ PRM_Template SOP_CitySimulator::myTemplateList[] = {
     PRM_Template(PRM_FILE,  1, &parmFilePath,     &defaultFilePath),
     PRM_Template(PRM_INT,   1, &parmRunSteps,     &defaultRunSteps),
 
-    // Buttons
-    PRM_Template(PRM_CALLBACK, 1, &btnStep,  &defaultBtnZero),
-    PRM_Template(PRM_CALLBACK, 1, &btnRun,   &defaultBtnZero),
-    PRM_Template(PRM_CALLBACK, 1, &btnReset, &defaultBtnZero),
-    PRM_Template(PRM_CALLBACK, 1, &btnSave,  &defaultBtnZero),
-    PRM_Template(PRM_CALLBACK, 1, &btnLoad,  &defaultBtnZero),
+    // Buttons — each wired to buttonCallback, which sets myPendingAction
+    // and calls forceRecook() so cookMySop dispatches the command.
+    PRM_Template(PRM_CALLBACK, 1, &btnStep,  &defaultBtnZero, 0, 0,
+                 &SOP_CitySimulator::buttonCallback),
+    PRM_Template(PRM_CALLBACK, 1, &btnRun,   &defaultBtnZero, 0, 0,
+                 &SOP_CitySimulator::buttonCallback),
+    PRM_Template(PRM_CALLBACK, 1, &btnReset, &defaultBtnZero, 0, 0,
+                 &SOP_CitySimulator::buttonCallback),
+    PRM_Template(PRM_CALLBACK, 1, &btnSave,  &defaultBtnZero, 0, 0,
+                 &SOP_CitySimulator::buttonCallback),
+    PRM_Template(PRM_CALLBACK, 1, &btnLoad,  &defaultBtnZero, 0, 0,
+                 &SOP_CitySimulator::buttonCallback),
 
     // Read-only info display
     PRM_Template(PRM_STRING, 1, &infoTick,   &defaultInfoZero),
@@ -113,8 +119,32 @@ SOP_CitySimulator::SOP_CitySimulator(OP_Network* net,
 SOP_CitySimulator::~SOP_CitySimulator() = default;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// cookMySop — called by Houdini whenever a parameter changes or a cook
-// is requested. Reads button states and dispatches the right Command.
+// buttonCallback — static callback invoked by Houdini when any PRM_CALLBACK
+// button is clicked. Identifies the button by PRM_Template name, stores the
+// pending action, and forces a recook so cookMySop can dispatch the command.
+// ─────────────────────────────────────────────────────────────────────────────
+int SOP_CitySimulator::buttonCallback(void* data, int /*index*/,
+                                       float /*time*/,
+                                       const PRM_Template* tplate)
+{
+    auto* sop = static_cast<SOP_CitySimulator*>(data);
+    if (!sop || !tplate) return 0;
+
+    const char* token = tplate->getToken();
+    if      (!strcmp(token, "btn_step"))  sop->myPendingAction = ACTION_STEP;
+    else if (!strcmp(token, "btn_run"))   sop->myPendingAction = ACTION_RUN;
+    else if (!strcmp(token, "btn_reset")) sop->myPendingAction = ACTION_RESET;
+    else if (!strcmp(token, "btn_save"))  sop->myPendingAction = ACTION_SAVE;
+    else if (!strcmp(token, "btn_load"))  sop->myPendingAction = ACTION_LOAD;
+
+    sop->forceRecook();
+    return 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// cookMySop — called by Houdini whenever a recook is triggered.
+// Reads the pending action set by buttonCallback and dispatches the
+// appropriate Command.
 // ─────────────────────────────────────────────────────────────────────────────
 OP_ERROR SOP_CitySimulator::cookMySop(OP_Context& context)
 {
@@ -123,49 +153,48 @@ OP_ERROR SOP_CitySimulator::cookMySop(OP_Context& context)
 
     ensureSimulator(context);
 
-    // ── Read button states ───────────────────────────────────────────────────
-    // Houdini CALLBACK buttons return non-zero when they have been clicked
-    // since the last cook. We dispatch polymorphically through ICommand.
-
-    int stepClicked  = evalInt("btn_step",  0, context.getTime());
-    int runClicked   = evalInt("btn_run",   0, context.getTime());
-    int resetClicked = evalInt("btn_reset", 0, context.getTime());
-    int saveClicked  = evalInt("btn_save",  0, context.getTime());
-    int loadClicked  = evalInt("btn_load",  0, context.getTime());
+    // Consume the pending action (set by buttonCallback)
+    PendingAction action = myPendingAction;
+    myPendingAction = ACTION_NONE;
 
     std::unique_ptr<ICommand> cmd;
 
-    // COMMAND PATTERN: construct and execute the appropriate command.
-    // No if/else chain on button name — each branch constructs a different
-    // concrete ICommand and we call execute() polymorphically.
-    if (resetClicked)
+    switch (action)
     {
-        unsigned int seed = (unsigned int)evalInt("seed", 0, context.getTime());
-        cmd = std::make_unique<ResetCommand>(*mySim, seed);
-    }
-    else if (loadClicked)
-    {
-        UT_String filePath;
-        evalString(filePath, "file_path", 0, context.getTime());
-        cmd = std::make_unique<ExportCommand>(*mySim, std::string(filePath.c_str()));
-        // Note: for load we reuse ExportCommand's path but call load — 
-        // replace with a dedicated LoadCommand for cleaner separation
-        // TODO: add LoadCommand : ICommand that calls mySim.load()
-    }
-    else if (saveClicked)
-    {
-        UT_String filePath;
-        evalString(filePath, "file_path", 0, context.getTime());
-        cmd = std::make_unique<ExportCommand>(*mySim, std::string(filePath.c_str()));
-    }
-    else if (runClicked)
-    {
-        int steps = evalInt("run_steps", 0, context.getTime());
-        cmd = std::make_unique<RunCommand>(*mySim, steps);
-    }
-    else if (stepClicked)
-    {
-        cmd = std::make_unique<StepCommand>(*mySim);
+        case ACTION_RESET:
+        {
+            unsigned int seed = (unsigned int)evalInt("seed", 0, context.getTime());
+            cmd = std::make_unique<ResetCommand>(*mySim, seed);
+            break;
+        }
+        case ACTION_LOAD:
+        {
+            UT_String filePath;
+            evalString(filePath, "file_path", 0, context.getTime());
+            // TODO: add a dedicated LoadCommand; for now reuses ExportCommand
+            cmd = std::make_unique<ExportCommand>(*mySim, std::string(filePath.c_str()));
+            break;
+        }
+        case ACTION_SAVE:
+        {
+            UT_String filePath;
+            evalString(filePath, "file_path", 0, context.getTime());
+            cmd = std::make_unique<ExportCommand>(*mySim, std::string(filePath.c_str()));
+            break;
+        }
+        case ACTION_RUN:
+        {
+            int steps = evalInt("run_steps", 0, context.getTime());
+            cmd = std::make_unique<RunCommand>(*mySim, steps);
+            break;
+        }
+        case ACTION_STEP:
+        {
+            cmd = std::make_unique<StepCommand>(*mySim);
+            break;
+        }
+        default:
+            break;
     }
 
     if (cmd)

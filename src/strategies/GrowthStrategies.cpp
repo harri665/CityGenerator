@@ -1,6 +1,11 @@
 #include "GrowthStrategies.h"
 #include <cmath>
 #include <cstdlib>
+#include <algorithm>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GridGrowthStrategy
@@ -13,19 +18,55 @@ bool GridGrowthStrategy::grow(SimulationState& state)
     if (g.nodeCount() == 0)
     {
         int origin = g.addNode(UT_Vector3F(0, 0, 0));
+        myFrontier.clear();
+        myFrontier.push_back(origin);
         return true;
     }
 
-    // TODO: Track frontier nodes and extend them in cardinal directions.
-    // For each frontier node, try adding +X, -X, +Z, -Z neighbors at myBlockSize
-    // spacing, skipping any direction that would place a node too close to an
-    // existing one. Connect new nodes back to their parent. Return false when
-    // no frontier nodes remain expandable.
-    //
-    // Hint: store a "frontier" list in SimulationState or derive it from nodes
-    // that have fewer than 4 connected edges.
+    // Iterate over a copy of the frontier, clear and rebuild
+    std::vector<int> oldFrontier = myFrontier;
+    myFrontier.clear();
 
-    return false; // placeholder
+    float snapDist = myBlockSize * 0.4f;
+
+    // Cardinal directions: +X, -X, +Z, -Z
+    UT_Vector3F dirs[4] = {
+        UT_Vector3F(myBlockSize, 0, 0),
+        UT_Vector3F(-myBlockSize, 0, 0),
+        UT_Vector3F(0, 0, myBlockSize),
+        UT_Vector3F(0, 0, -myBlockSize)
+    };
+
+    for (int frontId : oldFrontier)
+    {
+        const RoadNode* frontNode = g.node(frontId);
+        if (!frontNode) continue;
+
+        for (int d = 0; d < 4; ++d)
+        {
+            UT_Vector3F candidate = frontNode->position + dirs[d];
+
+            // Snap check: skip if any existing node is within snapDist
+            bool tooClose = false;
+            for (const auto& n : g.nodes())
+            {
+                float dx = n.position.x() - candidate.x();
+                float dz = n.position.z() - candidate.z();
+                if (std::sqrt(dx * dx + dz * dz) < snapDist)
+                {
+                    tooClose = true;
+                    break;
+                }
+            }
+            if (tooClose) continue;
+
+            int newId = g.addNode(candidate);
+            g.addEdge(frontId, newId);
+            myFrontier.push_back(newId);
+        }
+    }
+
+    return !myFrontier.empty();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,20 +76,152 @@ bool OrganicGrowthStrategy::grow(SimulationState& state)
 {
     RoadGraph& g = state.graph;
 
+    // Tick 0: seed the graph and one arterial tip
     if (g.nodeCount() == 0)
     {
-        g.addNode(UT_Vector3F(0, 0, 0));
+        int origin = g.addNode(UT_Vector3F(0, 0, 0));
+        myTips.clear();
+        float heading = myField.sampleHeading(0, 0, state.seed);
+        myTips.push_back({ origin, heading, 0 });
         return true;
     }
 
-    // TODO: Maintain a list of active growth tips (node IDs + heading angles).
-    // Each tick, advance each tip by mySegmentLen in its current heading, jittered
-    // by ±myAngleJitter radians (use state.seed + tick for determinism via srand).
-    // Occasionally branch (e.g. 20% chance per tip) by spawning a second tip at
-    // a perpendicular angle. Terminate tips that come within a snap radius of an
-    // existing node (merge them instead of overlapping).
+    // Tier parameters: segLen, snapRadius, jitter, branchChance, branchTier, maxTips
+    struct TierParams {
+        float segLen;
+        float snapRadius;
+        float jitter;
+        float branchChance;
+        int   branchTier;
+        int   maxTips;
+    };
 
-    return false; // placeholder
+    TierParams tierParams[3];
+    // Tier 0 (arterial)
+    tierParams[0].segLen      = mySegmentLen * 3.0f;
+    tierParams[0].snapRadius  = tierParams[0].segLen * 0.4f;
+    tierParams[0].jitter      = myAngleJitter * 0.3f;
+    tierParams[0].branchChance = 0.08f;
+    tierParams[0].branchTier  = 1;
+    tierParams[0].maxTips     = 8;
+    // Tier 1 (collector)
+    tierParams[1].segLen      = mySegmentLen * 1.5f;
+    tierParams[1].snapRadius  = tierParams[1].segLen * 0.4f;
+    tierParams[1].jitter      = myAngleJitter * 0.7f;
+    tierParams[1].branchChance = 0.15f;
+    tierParams[1].branchTier  = 2;
+    tierParams[1].maxTips     = 24;
+    // Tier 2 (local)
+    tierParams[2].segLen      = mySegmentLen;
+    tierParams[2].snapRadius  = tierParams[2].segLen * 0.4f;
+    tierParams[2].jitter      = myAngleJitter;
+    tierParams[2].branchChance = 0.0f;
+    tierParams[2].branchTier  = -1;
+    tierParams[2].maxTips     = 64;
+
+    // Work on a copy; rebuild myTips
+    std::vector<GrowthTip> oldTips = myTips;
+    myTips.clear();
+    bool addedGeometry = false;
+
+    // Sort tips by tier so arterials process first, then collectors, then locals
+    std::sort(oldTips.begin(), oldTips.end(),
+              [](const GrowthTip& a, const GrowthTip& b) { return a.tier < b.tier; });
+
+    for (int tipIdx = 0; tipIdx < (int)oldTips.size(); ++tipIdx)
+    {
+        GrowthTip tip = oldTips[tipIdx];
+        if (tip.tier < 0 || tip.tier > 2) continue;
+
+        const TierParams& tp = tierParams[tip.tier];
+        const RoadNode* tipNode = g.node(tip.nodeId);
+        if (!tipNode) continue;
+
+        UT_Vector3F pos = tipNode->position;
+
+        // Blend heading with tensor field
+        float heading = tip.heading * 0.6f
+            + myField.sampleHeading(pos.x(), pos.z(),
+                                    state.seed + state.tick * 7 + tipIdx) * 0.4f;
+
+        // Apply jitter
+        srand(state.seed + state.tick * 100 + tipIdx);
+        float randFloat = (float)rand() / (float)RAND_MAX;
+        heading += (randFloat - 0.5f) * 2.0f * tp.jitter;
+
+        // Compute candidate position
+        float newX = pos.x() + std::cos(heading) * tp.segLen;
+        float newZ = pos.z() + std::sin(heading) * tp.segLen;
+
+        // Water check
+        if (myField.waterMask(newX, newZ) > 0.5f)
+        {
+            // Try reflecting heading
+            heading += (float)M_PI * 0.5f;
+            newX = pos.x() + std::cos(heading) * tp.segLen;
+            newZ = pos.z() + std::sin(heading) * tp.segLen;
+
+            if (myField.waterMask(newX, newZ) > 0.5f)
+            {
+                // Terminate this tip
+                continue;
+            }
+        }
+
+        // Snap check: find closest existing node within snapRadius
+        int snapNodeId = -1;
+        float bestDist = tp.snapRadius;
+        for (const auto& n : g.nodes())
+        {
+            float dx = n.position.x() - newX;
+            float dz = n.position.z() - newZ;
+            float dist = std::sqrt(dx * dx + dz * dz);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                snapNodeId = n.id;
+            }
+        }
+
+        if (snapNodeId >= 0)
+        {
+            // Connect to existing node and terminate this tip
+            g.addEdge(tip.nodeId, snapNodeId);
+            addedGeometry = true;
+            continue;
+        }
+
+        // Add new node and edge
+        int newId = g.addNode(UT_Vector3F(newX, 0, newZ));
+        g.addEdge(tip.nodeId, newId);
+        addedGeometry = true;
+
+        // Re-add tip with updated position and heading
+        myTips.push_back({ newId, heading, tip.tier });
+
+        // Branching
+        if (tp.branchTier >= 0 && tp.branchChance > 0.0f)
+        {
+            float branchRand = (float)rand() / (float)RAND_MAX;
+            if (branchRand < tp.branchChance)
+            {
+                // Count tips of branchTier
+                int tierCount = 0;
+                for (const auto& t : myTips)
+                    if (t.tier == tp.branchTier) tierCount++;
+
+                if (tierCount < tierParams[tp.branchTier].maxTips)
+                {
+                    float branchHeadingRand = (float)rand() / (float)RAND_MAX;
+                    float branchHeading = heading + (float)M_PI * 0.5f
+                                          + (branchHeadingRand - 0.5f) * 0.4f;
+                    myTips.push_back({ tip.nodeId, branchHeading, tp.branchTier });
+                }
+            }
+        }
+    }
+
+    return addedGeometry;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,16 +231,74 @@ bool RadialGrowthStrategy::grow(SimulationState& state)
 {
     RoadGraph& g = state.graph;
 
+    // Tick 0: seed origin and initialize spoke node IDs
     if (g.nodeCount() == 0)
     {
-        g.addNode(UT_Vector3F(0, 0, 0));
+        int origin = g.addNode(UT_Vector3F(0, 0, 0));
+        mySpokeNodeIds.clear();
+        mySpokeNodeIds.resize(mySpokesPerRing, origin);
+        myCurrentRing = 0;
         return true;
     }
 
-    // TODO: On even ticks, extend each spoke outward by myRingSpacing.
-    // On odd ticks, connect adjacent spoke tips with a ring segment.
-    // Determine current ring index from state.tick / 2.
-    // Use mySpokesPerRing to compute spoke angles: angle = i * (2π / mySpokesPerRing).
+    float snapDist = myRingSpacing * 0.4f;
 
-    return false; // placeholder
+    // Even ticks (after tick 0): extend spokes outward
+    if (state.tick % 2 == 0)
+    {
+        bool addedAny = false;
+        for (int i = 0; i < mySpokesPerRing; ++i)
+        {
+            float angle = (float)i * (2.0f * (float)M_PI / (float)mySpokesPerRing);
+            float r     = myRingSpacing * (float)(myCurrentRing + 1);
+            UT_Vector3F candidate(std::cos(angle) * r, 0, std::sin(angle) * r);
+
+            // Snap check
+            bool tooClose = false;
+            for (const auto& n : g.nodes())
+            {
+                float dx = n.position.x() - candidate.x();
+                float dz = n.position.z() - candidate.z();
+                if (std::sqrt(dx * dx + dz * dz) < snapDist)
+                {
+                    tooClose = true;
+                    break;
+                }
+            }
+            if (tooClose) continue;
+
+            int newId = g.addNode(candidate);
+            g.addEdge(mySpokeNodeIds[i], newId);
+            mySpokeNodeIds[i] = newId;
+            addedAny = true;
+        }
+        return addedAny;
+    }
+    else
+    {
+        // Odd ticks: connect ring between adjacent spoke tips
+        for (int i = 0; i < mySpokesPerRing; ++i)
+        {
+            int a = mySpokeNodeIds[i];
+            int b = mySpokeNodeIds[(i + 1) % mySpokesPerRing];
+
+            // Check if edge already exists
+            bool exists = false;
+            for (const auto& e : g.edges())
+            {
+                if ((e.fromNode == a && e.toNode == b) ||
+                    (e.fromNode == b && e.toNode == a))
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists)
+            {
+                g.addEdge(a, b);
+            }
+        }
+        myCurrentRing++;
+        return true;
+    }
 }

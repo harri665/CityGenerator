@@ -1,5 +1,6 @@
 #pragma once
 #include "IGrowthStrategy.h"
+#include "../core/TensorField.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GridGrowthStrategy — Manhattan-style axis-aligned grid expansion
@@ -16,6 +17,7 @@ public:
 
 private:
     float myBlockSize;
+    std::vector<int> myFrontier;
 };
 
 
@@ -26,8 +28,16 @@ private:
 class OrganicGrowthStrategy : public IGrowthStrategy
 {
 public:
-    explicit OrganicGrowthStrategy(float segmentLen = 4.0f, float angleJitter = 0.3f)
-        : mySegmentLen(segmentLen), myAngleJitter(angleJitter) {}
+    explicit OrganicGrowthStrategy(float segmentLen   = 4.0f,
+                                    float angleJitter  = 0.3f,
+                                    float radialWeight = 0.4f,
+                                    float riverX       = 25.0f)
+        : mySegmentLen(segmentLen)
+        , myAngleJitter(angleJitter)
+    {
+        myField.radialWeight = radialWeight;
+        myField.riverX       = riverX;
+    }
 
     bool        grow(SimulationState& state) override;
     const char* name() const override { return "organic"; }
@@ -35,6 +45,14 @@ public:
 private:
     float mySegmentLen;
     float myAngleJitter;
+
+    struct GrowthTip {
+        int   nodeId;
+        float heading;
+        int   tier;      // 0=arterial, 1=collector, 2=local
+    };
+    std::vector<GrowthTip> myTips;
+    TensorField            myField;
 };
 
 
@@ -54,4 +72,6 @@ public:
 private:
     int   mySpokesPerRing;
     float myRingSpacing;
+    int myCurrentRing = 0;
+    std::vector<int> mySpokeNodeIds;
 };
