@@ -139,6 +139,13 @@ bool OrganicGrowthStrategy::grow(SimulationState& state)
 
         UT_Vector3F pos = tipNode->position;
 
+        // Density gradient: blocks shrink near center, grow at edges
+        float distFromCenter = std::sqrt(pos.x() * pos.x() + pos.z() * pos.z());
+        float densityFactor = 0.5f + 0.5f * std::min(1.0f,
+            distFromCenter / (state.commercialRadius * 4.0f));
+        float segLen    = tp.segLen    * densityFactor;
+        float snapRadius = tp.snapRadius * densityFactor;
+
         // Blend heading with tensor field
         float heading = tip.heading * 0.6f
             + myField.sampleHeading(pos.x(), pos.z(),
@@ -150,16 +157,16 @@ bool OrganicGrowthStrategy::grow(SimulationState& state)
         heading += (randFloat - 0.5f) * 2.0f * tp.jitter;
 
         // Compute candidate position
-        float newX = pos.x() + std::cos(heading) * tp.segLen;
-        float newZ = pos.z() + std::sin(heading) * tp.segLen;
+        float newX = pos.x() + std::cos(heading) * segLen;
+        float newZ = pos.z() + std::sin(heading) * segLen;
 
         // Water check
         if (myField.waterMask(newX, newZ) > 0.5f)
         {
             // Try reflecting heading
             heading += (float)M_PI * 0.5f;
-            newX = pos.x() + std::cos(heading) * tp.segLen;
-            newZ = pos.z() + std::sin(heading) * tp.segLen;
+            newX = pos.x() + std::cos(heading) * segLen;
+            newZ = pos.z() + std::sin(heading) * segLen;
 
             if (myField.waterMask(newX, newZ) > 0.5f)
             {
@@ -170,7 +177,7 @@ bool OrganicGrowthStrategy::grow(SimulationState& state)
 
         // Snap check: find closest existing node within snapRadius
         int snapNodeId = -1;
-        float bestDist = tp.snapRadius;
+        float bestDist = snapRadius;
         for (const auto& n : g.nodes())
         {
             float dx = n.position.x() - newX;
@@ -183,17 +190,21 @@ bool OrganicGrowthStrategy::grow(SimulationState& state)
             }
         }
 
+        // Road width by tier: arterials wide, locals narrow
+        static const float tierWidth[3] = { 3.0f, 1.8f, 1.0f };
+        float edgeWidth = tierWidth[tip.tier];
+
         if (snapNodeId >= 0)
         {
             // Connect to existing node and terminate this tip
-            g.addEdge(tip.nodeId, snapNodeId);
+            g.addEdge(tip.nodeId, snapNodeId, edgeWidth);
             addedGeometry = true;
             continue;
         }
 
         // Add new node and edge
         int newId = g.addNode(UT_Vector3F(newX, 0, newZ));
-        g.addEdge(tip.nodeId, newId);
+        g.addEdge(tip.nodeId, newId, edgeWidth);
         addedGeometry = true;
 
         // Re-add tip with updated position and heading

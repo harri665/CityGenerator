@@ -287,7 +287,53 @@ void CitySimulator::rebuildBlocks()
         rawBlocks.push_back(std::move(block));
     }
 
-    // ── Phase 2: Parcel subdivision ─────────────────────────────────────
+    // ── Phase 2: Two-axis parcel subdivision ──────────────────────────
+
+    // Helper lambda: subdivide a polygon along an axis into strips
+    auto subdivideAlongAxis = [&](const std::vector<UT_Vector3F>& poly,
+                                   const UT_Vector3F& axis, float lotWidth)
+        -> std::vector<std::vector<UT_Vector3F>>
+    {
+        std::vector<std::vector<UT_Vector3F>> result;
+
+        // Project boundary onto axis to get span
+        float minProj =  1e18f;
+        float maxProj = -1e18f;
+        for (const auto& p : poly)
+        {
+            float proj = p.x() * axis.x() + p.z() * axis.z();
+            minProj = std::min(minProj, proj);
+            maxProj = std::max(maxProj, proj);
+        }
+
+        float span = maxProj - minProj;
+        int numLots = std::max(1, (int)std::floor(span / lotWidth));
+
+        if (numLots <= 1)
+        {
+            result.push_back(poly);
+            return result;
+        }
+
+        float actualWidth = span / (float)numLots;
+        UT_Vector3F negAxis(-axis.x(), 0, -axis.z());
+
+        for (int lot = 0; lot < numLots; ++lot)
+        {
+            float lotMin = minProj + lot * actualWidth;
+            float lotMax = lotMin + actualWidth;
+
+            UT_Vector3F ptMin(axis.x() * lotMin, 0, axis.z() * lotMin);
+            std::vector<UT_Vector3F> clipped = clipPolygonByLine(poly, ptMin, axis);
+
+            UT_Vector3F ptMax(axis.x() * lotMax, 0, axis.z() * lotMax);
+            clipped = clipPolygonByLine(clipped, ptMax, negAxis);
+
+            if ((int)clipped.size() >= 3)
+                result.push_back(clipped);
+        }
+        return result;
+    };
 
     int parcelId = 0;
 
@@ -302,10 +348,20 @@ void CitySimulator::rebuildBlocks()
             continue;
         }
 
-        // Determine lot width by zone
-        float lotWidth = 4.0f; // Residential default
-        if (block.zone == ZoneType::Commercial)  lotWidth = 8.0f;
-        if (block.zone == ZoneType::Industrial)  lotWidth = 12.0f;
+        // Lot width varies by zone
+        float baseLotWidth = 4.0f; // Residential default
+        if (block.zone == ZoneType::Commercial)  baseLotWidth = 8.0f;
+        if (block.zone == ZoneType::Industrial)  baseLotWidth = 12.0f;
+
+        // Distance-scaled: smaller lots near center, larger at edges
+        UT_Vector3F centroid(0, 0, 0);
+        for (const auto& p : block.boundary) centroid += p;
+        centroid /= (float)block.boundary.size();
+        float centroidDist = std::sqrt(centroid.x() * centroid.x()
+                                     + centroid.z() * centroid.z());
+        float distScale = 0.6f + 0.4f * std::min(1.0f,
+            centroidDist / (myState.commercialRadius * 3.0f));
+        float lotWidth = baseLotWidth * distScale;
 
         // Find the longest edge to determine primary axis
         int bn = (int)block.boundary.size();
@@ -328,7 +384,6 @@ void CitySimulator::rebuildBlocks()
                                 + primaryAxis.z() * primaryAxis.z());
         if (axisLen < 1e-6f)
         {
-            // Degenerate — keep as-is
             CityBlock parcel = block;
             parcel.id = parcelId++;
             myState.blocks.push_back(std::move(parcel));
@@ -337,65 +392,37 @@ void CitySimulator::rebuildBlocks()
         primaryAxis.x() /= axisLen;
         primaryAxis.z() /= axisLen;
 
-        // Normal perpendicular to primary axis (in XZ plane)
-        UT_Vector3F clipNormal(-primaryAxis.z(), 0, primaryAxis.x());
+        // Perpendicular axis
+        UT_Vector3F perpAxis(-primaryAxis.z(), 0, primaryAxis.x());
 
-        // Project boundary onto primary axis to get span
-        float minProj =  1e18f;
-        float maxProj = -1e18f;
-        for (const auto& p : block.boundary)
+        // Depth ratio for second-axis subdivision
+        float depthRatio = 1.5f; // Residential default
+        if (block.zone == ZoneType::Commercial)  depthRatio = 1.0f;  // squarish
+        if (block.zone == ZoneType::Industrial)  depthRatio = 2.0f;  // deep warehouses
+
+        // First pass: subdivide along primary axis into strips
+        auto strips = subdivideAlongAxis(block.boundary, primaryAxis, lotWidth);
+
+        // Second pass: subdivide each strip along perpendicular axis
+        float perpLotWidth = lotWidth * depthRatio;
+
+        for (const auto& strip : strips)
         {
-            float proj = p.x() * primaryAxis.x() + p.z() * primaryAxis.z();
-            minProj = std::min(minProj, proj);
-            maxProj = std::max(maxProj, proj);
-        }
+            auto parcels = subdivideAlongAxis(strip, perpAxis, perpLotWidth);
 
-        float span = maxProj - minProj;
-        int numLots = std::max(1, (int)std::floor(span / lotWidth));
+            for (auto& polyBoundary : parcels)
+            {
+                CityBlock parcel;
+                parcel.id = parcelId++;
+                parcel.boundary = polyBoundary;
+                parcel.computeArea();
+                parcel.assignZone(UT_Vector3F(0, 0, 0), myState.commercialRadius);
 
-        if (numLots <= 1)
-        {
-            // Too small to subdivide
-            CityBlock parcel = block;
-            parcel.id = parcelId++;
-            myState.blocks.push_back(std::move(parcel));
-            continue;
-        }
+                // Discard tiny parcels
+                if (parcel.area < 2.0f) continue;
 
-        float actualLotWidth = span / (float)numLots;
-
-        // Clip block polygon into lots using Sutherland-Hodgman
-        for (int lot = 0; lot < numLots; ++lot)
-        {
-            float lotMin = minProj + lot * actualLotWidth;
-            float lotMax = lotMin + actualLotWidth;
-
-            // Clip against "min" plane: keep points where proj >= lotMin
-            UT_Vector3F linePointMin(primaryAxis.x() * lotMin, 0,
-                                     primaryAxis.z() * lotMin);
-            // Normal points in the direction of increasing projection
-            std::vector<UT_Vector3F> clipped = clipPolygonByLine(
-                block.boundary, linePointMin, primaryAxis);
-
-            // Clip against "max" plane: keep points where proj <= lotMax
-            UT_Vector3F linePointMax(primaryAxis.x() * lotMax, 0,
-                                     primaryAxis.z() * lotMax);
-            // Normal points in the direction of decreasing projection
-            UT_Vector3F negAxis(-primaryAxis.x(), 0, -primaryAxis.z());
-            clipped = clipPolygonByLine(clipped, linePointMax, negAxis);
-
-            if ((int)clipped.size() < 3) continue;
-
-            CityBlock parcel;
-            parcel.id = parcelId++;
-            parcel.boundary = clipped;
-            parcel.computeArea();
-            parcel.assignZone(UT_Vector3F(0, 0, 0), myState.commercialRadius);
-
-            // Discard tiny parcels
-            if (parcel.area < 2.0f) continue;
-
-            myState.blocks.push_back(std::move(parcel));
+                myState.blocks.push_back(std::move(parcel));
+            }
         }
     }
 }

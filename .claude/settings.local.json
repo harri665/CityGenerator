@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls -la \"E:/NextCloud/Documents/CityGenerator/build/\"*.dll)",
-      "Bash(cmake --build . --config Release)",
-      "Bash(\"/c/Program Files/CMake/bin/cmake.exe\" --build \"E:/NextCloud/Documents/CityGenerator/build\" --config Release)"
-    ]
-  }
-}

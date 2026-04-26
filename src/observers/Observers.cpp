@@ -19,8 +19,10 @@ void GeometryObserver::onStateChanged(const SimulationState& state)
 
 void GeometryObserver::writeRoads(const RoadGraph& graph)
 {
-    // Create a string attribute to tag primitives by type
+    // Create attributes for road rendering
     GA_RWHandleS primType(myGdp->addStringTuple(GA_ATTRIB_PRIMITIVE, "type", 1));
+    GA_RWHandleS roadTier(myGdp->addStringTuple(GA_ATTRIB_PRIMITIVE, "road_tier", 1));
+    GA_RWHandleF pscale(myGdp->addFloatTuple(GA_ATTRIB_POINT, "pscale", 1));
 
     for (const auto& edge : graph.edges())
     {
@@ -33,8 +35,25 @@ void GeometryObserver::writeRoads(const RoadGraph& graph)
         myGdp->setPos3(line->getPointOffset(0), a->position);
         myGdp->setPos3(line->getPointOffset(1), b->position);
 
+        // Set pscale on both points for Polywire SOP downstream
+        if (pscale.isValid())
+        {
+            float ps = edge.width * 0.3f;
+            pscale.set(line->getPointOffset(0), ps);
+            pscale.set(line->getPointOffset(1), ps);
+        }
+
         if (primType.isValid())
             primType.set(line->getMapOffset(), "road");
+
+        // Tag road tier for material assignment
+        if (roadTier.isValid())
+        {
+            const char* tier = "local";
+            if (edge.width >= 2.5f)      tier = "arterial";
+            else if (edge.width >= 1.5f) tier = "collector";
+            roadTier.set(line->getMapOffset(), tier);
+        }
     }
 }
 
