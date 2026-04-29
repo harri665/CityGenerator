@@ -5,6 +5,7 @@
 #include <string>
 
 
+
 // IBuildingStrategy — abstract building geometry generator per zone type
 // BuildingFactory creates the right one; CitySimulator never switches on ZoneType
 class IBuildingStrategy
