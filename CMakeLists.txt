@@ -13,14 +13,16 @@ find_package(Houdini REQUIRED)
 set(SOURCES
     src/core/RoadGraph.cpp
     src/core/CityBlock.cpp
-    src/core/TensorField.cpp
-    src/strategies/GrowthStrategies.cpp
+    src/core/RK4Integrator.cpp
+    src/core/StreamlineGenerator.cpp
     src/factory/Factories.cpp
     src/commands/Commands.cpp
     src/observers/Observers.cpp
     src/persistence/Persistence.cpp
     src/simulator/CitySimulator.cpp
+    src/simulator/BlockExtraction.cpp
     src/SOP_CitySimulator.cpp
+    src/SOP_CityBuilding.cpp
 )
 
 # ── Build shared library (HDK DSO plugin) ───────────────────────────────────

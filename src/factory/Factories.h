@@ -1,24 +1,8 @@
 #pragma once
-#include "../strategies/IGrowthStrategy.h"
 #include "../core/ZoneType.h"
 #include <GU/GU_Detail.h>
 #include <memory>
 #include <string>
-
-// StrategyFactory — FACTORY PATTERN
-//
-// Creates IGrowthStrategy instances from a string key (matching HDA dropdown).
-// CitySimulator asks this factory for a strategy — it never constructs one
-// directly. Adding a new growth mode = add a concrete class + register a key
-// here. No if/else in the simulator.
-class StrategyFactory
-{
-public:
-    // Returns nullptr if key is unrecognized
-    static std::unique_ptr<IGrowthStrategy> create(const std::string& key,
-                                                    float param1 = 5.0f,
-                                                    float param2 = 0.3f);
-};
 
 
 // IBuildingStrategy — abstract building geometry generator per zone type

@@ -64,22 +64,24 @@ void GeometryObserver::writeBlocks(const std::vector<CityBlock>& blocks)
         primType = GA_RWHandleS(myGdp->addStringTuple(GA_ATTRIB_PRIMITIVE, "type", 1));
 
     GA_RWHandleS zoneAttr(myGdp->addStringTuple(GA_ATTRIB_PRIMITIVE, "zone", 1));
+    GA_RWHandleI idAttr(myGdp->addIntTuple(GA_ATTRIB_PRIMITIVE, "id", 1));
 
     for (const auto& block : blocks)
     {
         if (block.boundary.size() < 3) continue;
 
-        // Use BuildingFactory to get the right geometry strategy — no switch here
-        auto buildingStrat = BuildingFactory::create(block.zone);
-        if (buildingStrat)
+        // Create a single closed polygon for the block boundary
+        GU_PrimPoly* poly = GU_PrimPoly::build(myGdp, (GA_Size)block.boundary.size(), GU_POLY_CLOSED);
+        for (size_t i = 0; i < block.boundary.size(); ++i)
         {
-            buildingStrat->generate(myGdp, block.boundary, block.id);
+            myGdp->setPos3(poly->getPointOffset((GA_Size)i), block.boundary[i]);
         }
 
-        // Tag last-added primitive with zone name for shading/selection
-        GA_Offset lastPrim = myGdp->getPrimitiveMap().lastOffset();
-        if (primType.isValid())  primType.set(lastPrim, "block");
-        if (zoneAttr.isValid())  zoneAttr.set(lastPrim, zoneTypeName(block.zone).c_str());
+        // Tag primitive with block metadata
+        GA_Offset offset = poly->getMapOffset();
+        if (primType.isValid()) primType.set(offset, "block");
+        if (zoneAttr.isValid()) zoneAttr.set(offset, zoneTypeName(block.zone).c_str());
+        if (idAttr.isValid())   idAttr.set(offset, block.id);
     }
 }
 
@@ -88,11 +90,6 @@ void GeometryObserver::writeBlocks(const std::vector<CityBlock>& blocks)
 void UIObserver::onStateChanged(const SimulationState& state)
 {
     if (!myNode) return;
-
-    // Update read-only display parms on the HDA so the artist can see live stats.
-    // These parm names must match what you define in the HDA Type Properties.
-    myNode->setChRefString(std::to_string(state.tick),
-                           CH_STRING_LITERAL, "info_tick", 0, 0.0);
 
     myNode->setChRefString(std::to_string(state.graph.nodeCount()),
                            CH_STRING_LITERAL, "info_nodes", 0, 0.0);

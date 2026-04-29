@@ -16,8 +16,6 @@ bool JsonPersistence::save(const SimulationState& state, const std::string& path
     writer->jsonBeginMap();
 
     // Scalars
-    writer->jsonKeyToken("tick");            writer->jsonInt(state.tick);
-    writer->jsonKeyToken("seed");            writer->jsonInt((int)state.seed);
     writer->jsonKeyToken("commercialRadius");writer->jsonReal(state.commercialRadius);
 
     // Nodes
@@ -96,8 +94,6 @@ bool JsonPersistence::load(SimulationState& state, const std::string& path)
     const UT_JSONValueMap* map = root.getMap();
 
     // Scalars
-    if (auto* v = map->get("tick"))            state.tick             = (int)v->getI();
-    if (auto* v = map->get("seed"))            state.seed             = (unsigned int)v->getI();
     if (auto* v = map->get("commercialRadius"))state.commercialRadius = (float)v->getF();
 
     // Nodes — we rebuild via addNode so adjacency is re-established

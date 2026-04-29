@@ -14,6 +14,16 @@ void CityBlock::computeArea()
     area = std::abs(a * 0.5f);
 }
 
+UT_Vector3F CityBlock::centroid() const
+{
+    UT_Vector3F c(0, 0, 0);
+    for (const auto& p : boundary)
+        c += p;
+    if (!boundary.empty())
+        c /= (float)boundary.size();
+    return c;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // File-local noise function for zone clustering (same hash pattern as
 // TensorField::smoothNoise, avoids header changes)

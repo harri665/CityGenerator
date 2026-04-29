@@ -1,5 +1,4 @@
 #include "Factories.h"
-#include "../strategies/GrowthStrategies.h"
 #include <GU/GU_PrimPoly.h>
 #include <cstdlib>
 #include <cmath>
@@ -7,20 +6,6 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-
-// ─────────────────────────────────────────────────────────────────────────────
-// StrategyFactory
-// ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<IGrowthStrategy>
-StrategyFactory::create(const std::string& key, float param1, float param2)
-{
-    if (key == "grid")    return std::make_unique<GridGrowthStrategy>(param1);
-    if (key == "organic") return std::make_unique<OrganicGrowthStrategy>(param1, param2, 0.4f, 25.0f);
-    if (key == "radial")  return std::make_unique<RadialGrowthStrategy>((int)param1, param2);
-
-    // Default fallback — grid
-    return std::make_unique<GridGrowthStrategy>(param1);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Building strategy implementations
